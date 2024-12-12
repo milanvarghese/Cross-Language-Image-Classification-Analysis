@@ -152,7 +152,7 @@ int main() {
     load_csv("test.csv", X_test, y_test);
 
     cout << "Training SVM...\n";
-    SVM svm(1e-4, 0.01, 5, n_classes);
+    SVM svm(1e-4, 0.1, 5, n_classes);
     double best_accuracy = svm.fit(X_train, y_train, n_features, X_test, y_test);
 
     cout << "Best Accuracy: " << fixed << setprecision(2) << best_accuracy << "%\n";
