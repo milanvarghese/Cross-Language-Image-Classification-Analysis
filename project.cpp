@@ -13,6 +13,38 @@
 using namespace std;
 using namespace Eigen;
 
+void normalize_data(vector<vector<double>>& X) {
+    for (auto& row : X)
+        for (auto& val : row)
+            val /= 255.0;
+}
+
+
+MatrixXd vectorXiToMatrixXd(const VectorXi& vec, int num_classes) {
+    MatrixXd mat = MatrixXd::Zero(vec.size(), num_classes);
+    for (int i = 0; i < vec.size(); ++i) {
+        mat(i, vec(i)) = 1.0;
+    }
+    return mat;
+}
+
+MatrixXd vectorToMatrix(const vector<vector<double>>& vec) {
+    int rows = vec.size();
+    int cols = vec[0].size();
+    MatrixXd mat(rows, cols);
+    for (int i = 0; i < rows; ++i)
+        for (int j = 0; j < cols; ++j)
+            mat(i, j) = vec[i][j];
+    return mat;
+}
+
+VectorXi vectorToVectorXi(const vector<int>& vec) {
+    VectorXi v(vec.size());
+    for (size_t i = 0; i < vec.size(); ++i)
+        v(i) = vec[i];
+    return v;
+}
+
 // Function to load CIFAR-10 CSV files
 void load_csv(const string &file_path, vector<vector<double>> &X, vector<int> &y) {
     ifstream file(file_path);
@@ -150,73 +182,149 @@ public:
 // SVM Class Definition
 class SVM {
 private:
-    MatrixXd weights;
-    double learning_rate;           
-    double lambda_param;            
-    int n_epochs;                   
-    int n_classes;                  
+    vector<vector<double>> weights;  // Class-specific weights
+    vector<double> biases;           // Class-specific biases
+    double learning_rate;            // Learning rate
+    double lambda_param;             // Regularization parameter
+    int n_epochs;                    // Number of epochs
+    int n_classes;                   // Number of classes
 
-public: 
-    // Class constructor
-    SVM(double lr, double lambda, int epochs, int classes)
-        : learning_rate(lr), lambda_param(lambda), n_epochs(epochs), n_classes(classes) {}
+public:
+    // Constructor
+    SVM(double learning_rate, double lambda_param, int n_epochs, int n_classes)
+        : learning_rate(learning_rate), lambda_param(lambda_param), n_epochs(n_epochs), n_classes(n_classes) {
+        weights.resize(n_classes, vector<double>(0));
+        biases.resize(n_classes, 0.0);
+    }
 
-    double fit(const MatrixXd& X, const VectorXi& y, const MatrixXd& X_test, const VectorXi& y_test) {
-        int n_features = X.cols();
-        weights = MatrixXd::Zero(n_classes, n_features);
+    // Public Getters
+    int getNumClasses() const { return n_classes; }
+    const vector<vector<double>>& getWeights() const { return weights; }
+    const vector<double>& getBiases() const { return biases; }
+
+    // Training the SVM
+    double fit(const vector<vector<double>>& X, const vector<int>& y, int n_features, const vector<vector<double>>& X_test, const vector<int>& y_test) {
+        for (int i = 0; i < n_classes; ++i) {
+            weights[i].resize(n_features, 0.0);  // Initialize weights to zero
+        }
 
         double best_accuracy = 0.0;
 
-        // Start training
-        auto train_start = chrono::high_resolution_clock::now();
-
         for (int epoch = 0; epoch < n_epochs; ++epoch) {
-            for (int c = 0; c < n_classes; ++c) {
-                for (int i = 0; i < X.rows(); ++i) {
-                    int y_binary = (y(i) == c) ? 1 : -1; // Convert labels to binary
-                    double linear_output = X.row(i).dot(weights.row(c)); // Linear output
+            for (size_t i = 0; i < X.size(); ++i) {
+                int y_true = y[i];
 
-                    // Update weights
-                    if (y_binary * linear_output < 1) { // Check margin
-                        weights.row(c) += learning_rate * (y_binary * X.row(i) - 2 * lambda_param * weights.row(c));
+                for (int c = 0; c < n_classes; ++c) {
+                    double linear_output = inner_product(weights[c].begin(), weights[c].end(), X[i].begin(), -biases[c]);
+                    int y_binary = (y_true == c) ? 1 : -1;
+
+                    // Hinge Loss Update
+                    if (y_binary * linear_output < 1) {
+                        for (int j = 0; j < n_features; ++j) {
+                            weights[c][j] += learning_rate * (y_binary * X[i][j] - 2 * lambda_param * weights[c][j]);
+                        }
+                        biases[c] += learning_rate * y_binary;
                     } else {
-                        weights.row(c) -= learning_rate * (2 * lambda_param * weights.row(c));
+                        for (int j = 0; j < n_features; ++j) {
+                            weights[c][j] -= learning_rate * 2 * lambda_param * weights[c][j];
+                        }
                     }
                 }
             }
 
-            // Evaluate on test set
-            VectorXi predictions = predict(X_test);
-            int correct = (predictions.array() == y_test.array()).count();
-            double accuracy = static_cast<double>(correct) / X_test.rows() * 100.0;
+            int correct = 0;
+            for (size_t i = 0; i < X_test.size(); ++i) {
+                int pred = predict(X_test[i]);
+                if (pred == y_test[i]) {
+                    ++correct;
+                }
+            }
+            double accuracy = static_cast<double>(correct) / X_test.size() * 100.0;
             best_accuracy = max(best_accuracy, accuracy);
-
             cout << "Epoch " << epoch + 1 << "/" << n_epochs << " - Accuracy: " << fixed << setprecision(2) << accuracy << "%\n";
         }
-
-        auto train_end = chrono::high_resolution_clock::now();
-        auto train_duration = chrono::duration_cast<chrono::milliseconds>(train_end - train_start).count();
-        cout << "Training took " << train_duration << " ms\n";
 
         return best_accuracy;
     }
 
-    int predict_sample(const RowVectorXd &sample) const {
-        VectorXd scores = weights * sample.transpose();
-        int predicted_class;
-        scores.maxCoeff(&predicted_class);
-        return predicted_class;
-    }
+    // Predict Function
+    int predict(const vector<double>& x) const {
+        double max_score = -INFINITY;
+        int best_class = -1;
 
-    // Batch Predict Function
-    VectorXi predict(const MatrixXd &X) const {
-        VectorXi predictions(X.rows());
-        for (int i = 0; i < X.rows(); ++i) {
-            predictions(i) = predict_sample(X.row(i));
+        for (int c = 0; c < n_classes; ++c) {
+            double linear_output = inner_product(weights[c].begin(), weights[c].end(), x.begin(), -biases[c]);
+            if (linear_output > max_score) {
+                max_score = linear_output;
+                best_class = c;
+            }
         }
-        return predictions;
+
+        return best_class;
     }
 };
+
+
+
+
+// class EnsembleModel {
+// private:
+//     vector<pair<SVM*, double>> models;
+
+// public:
+//     void addModel(SVM* model, double accuracy) {
+//         models.push_back(make_pair(model, accuracy));
+//     }
+
+//     int predict(const vector<double> &x) const {
+//         vector<double> class_scores(models[0].first->n_classes, 0.0);
+//         for (const auto& model_pair : models) {
+//             const SVM* model = model_pair.first;
+//             double weight = model_pair.second;
+//             vector<double> probs(model->n_classes);
+//             for (int c = 0; c < model->n_classes; ++c) {
+//                 probs[c] = inner_product(model->weights[c].begin(), model->weights[c].end(), x.begin(), -model->biases[c]);
+//             }
+//             for (int c = 0; c < model->n_classes; ++c) {
+//                 class_scores[c] += weight * probs[c];
+//             }
+//         }
+//         return max_element(class_scores.begin(), class_scores.end()) - class_scores.begin();
+//     }
+// };
+
+class EnsembleModel {
+private:
+    vector<pair<SVM*, double>> models;  // List of models and their accuracies
+
+public:
+    void addModel(SVM* model, double accuracy) {
+        models.push_back(make_pair(model, accuracy));
+    }
+
+    int predict(const vector<double>& x) const {
+        if (models.empty()) {
+            cerr << "Error: No models in the ensemble.\n";
+            exit(1);
+        }
+
+        vector<double> class_scores(models[0].first->getNumClasses(), 0.0);
+
+        for (const auto& model_pair : models) {
+            const SVM* model = model_pair.first;
+            double weight = model_pair.second;
+            const vector<vector<double>>& model_weights = model->getWeights();
+            const vector<double>& model_biases = model->getBiases();
+
+            for (int c = 0; c < model->getNumClasses(); ++c) {
+                double linear_output = inner_product(model_weights[c].begin(), model_weights[c].end(), x.begin(), -model_biases[c]);
+                class_scores[c] += weight * linear_output;
+            }
+        }
+        return max_element(class_scores.begin(), class_scores.end()) - class_scores.begin();
+    }
+};
+
 
 int main() {
     // Load CIFAR-10 data
@@ -226,31 +334,30 @@ int main() {
     load_csv("train.csv", X_train_vec, y_train_vec);
     load_csv("test.csv", X_test_vec, y_test_vec);
 
-    // Convert data to Eigen matrices
-    MatrixXd X_train(X_train_vec.size(), X_train_vec[0].size() + 1); // Add bias
-    MatrixXd X_test(X_test_vec.size(), X_test_vec[0].size() + 1);
+    // Normalize data
+    normalize_data(X_train_vec);
+    normalize_data(X_test_vec);
 
-    // Add bias column to X_train and X_test
-    for (size_t i = 0; i < X_train_vec.size(); ++i) {
-        X_train(i, 0) = 1.0; // Bias term
-        X_train.block(i, 1, 1, X_train_vec[i].size()) = Map<RowVectorXd>(X_train_vec[i].data(), X_train_vec[i].size());
-    }
+    // Convert data to Eigen types
+    MatrixXd X_train = vectorToMatrix(X_train_vec);
+    MatrixXd X_test = vectorToMatrix(X_test_vec);
+    VectorXi y_train = vectorToVectorXi(y_train_vec);
+    VectorXi y_test = vectorToVectorXi(y_test_vec);
 
-    for (size_t i = 0; i < X_test_vec.size(); ++i) {
-        X_test(i, 0) = 1.0; // Bias term
-        X_test.block(i, 1, 1, X_test_vec[i].size()) = Map<RowVectorXd>(X_test_vec[i].data(), X_test_vec[i].size());
-    }
+    /*
+    // ---- Logistic Regression ----
+    LogisticRegression lr(0.1, 10);
 
-    VectorXi y_train = Map<VectorXi>(y_train_vec.data(), y_train_vec.size());
-    VectorXi y_test = Map<VectorXi>(y_test_vec.data(), y_test_vec.size());
+    // Convert labels to MatrixXd (one-hot encoding)
+    MatrixXd y_train_onehot = vectorXiToMatrixXd(y_train, y_train.maxCoeff() + 1);
+    MatrixXd y_test_onehot = vectorXiToMatrixXd(y_test, y_test.maxCoeff() + 1);
 
-    // Train Logistic Regression
-    LogisticRegression lr(0.01, 1000);
-    lr.fit(X_train, y_train.cast<double>(), X_test, y_test.cast<double>());
+    lr.fit(X_train, y_train_onehot, X_test, y_test_onehot);
 
     VectorXi train_pred_lr = lr.predict(X_train);
     VectorXi test_pred_lr = lr.predict(X_test);
 
+    // Evaluation for Logistic Regression
     MatrixXi train_cm_lr = Evaluation::confusion_matrix(y_train, train_pred_lr, y_train.maxCoeff() + 1);
     MatrixXi test_cm_lr = Evaluation::confusion_matrix(y_test, test_pred_lr, y_test.maxCoeff() + 1);
 
@@ -268,24 +375,38 @@ int main() {
 
     cout << "Logistic Regression Evaluation Results:\n";
     cout << "Training Metrics:\n";
-    cout << "Accuracy: " << train_accuracy_lr << " Precision: " << train_precision_lr
-         << " Recall: " << train_recall_lr << " F1 Score: " << train_f1_lr << "\n";
+    cout << "Confusion Matrix:\n" << train_cm_lr << "\n";
+    cout << "Accuracy: " << train_accuracy_lr << "\n";
+    cout << "Precision: " << train_precision_lr << "\n";
+    cout << "Recall: " << train_recall_lr << "\n";
+    cout << "F1 Score: " << train_f1_lr << "\n";
     cout << "Validation Metrics:\n";
-    cout << "Accuracy: " << test_accuracy_lr << " Precision: " << test_precision_lr
-         << " Recall: " << test_recall_lr << " F1 Score: " << test_f1_lr << "\n";
+    cout << "Confusion Matrix:\n" << test_cm_lr << "\n";
+    cout << "Accuracy: " << test_accuracy_lr << "\n";
+    cout << "Precision: " << test_precision_lr << "\n";
+    cout << "Recall: " << test_recall_lr << "\n";
+    cout << "F1 Score: " << test_f1_lr << "\n";
+    */
 
-    // Train SVM
-    SVM svm(1e-6, 0.01, 100, y_train.maxCoeff() + 1);
-    svm.fit(X_train, y_train, X_test, y_test);
+    // ---- SVM ----
+    SVM svm(1.0, 0.1, 15, y_train.maxCoeff() + 1);
+    svm.fit(X_train_vec, y_train_vec, X_train_vec[0].size(), X_test_vec, y_test_vec);
 
-    VectorXi train_pred_svm = svm.predict(X_train);
-    VectorXi test_pred_svm = svm.predict(X_test);
+    vector<int> train_pred_svm(y_train_vec.size());
+    vector<int> test_pred_svm(y_test_vec.size());
 
-    MatrixXi train_cm_svm = Evaluation::confusion_matrix(y_train, train_pred_svm, y_train.maxCoeff() + 1);
-    MatrixXi test_cm_svm = Evaluation::confusion_matrix(y_test, test_pred_svm, y_test.maxCoeff() + 1);
+    for (size_t i = 0; i < y_train_vec.size(); ++i) {
+        train_pred_svm[i] = svm.predict(X_train_vec[i]);
+    }
+    for (size_t i = 0; i < y_test_vec.size(); ++i) {
+        test_pred_svm[i] = svm.predict(X_test_vec[i]);
+    }
 
-    double train_accuracy_svm = Evaluation::accuracy(y_train, train_pred_svm);
-    double test_accuracy_svm = Evaluation::accuracy(y_test, test_pred_svm);
+    MatrixXi train_cm_svm = Evaluation::confusion_matrix(vectorToVectorXi(y_train_vec), vectorToVectorXi(train_pred_svm), y_train.maxCoeff() + 1);
+    MatrixXi test_cm_svm = Evaluation::confusion_matrix(vectorToVectorXi(y_test_vec), vectorToVectorXi(test_pred_svm), y_test.maxCoeff() + 1);
+
+    double train_accuracy_svm = Evaluation::accuracy(vectorToVectorXi(y_train_vec), vectorToVectorXi(train_pred_svm));
+    double test_accuracy_svm = Evaluation::accuracy(vectorToVectorXi(y_test_vec), vectorToVectorXi(test_pred_svm));
 
     double train_precision_svm = Evaluation::precision(train_cm_svm);
     double test_precision_svm = Evaluation::precision(test_cm_svm);
@@ -298,11 +419,42 @@ int main() {
 
     cout << "SVM Evaluation Results:\n";
     cout << "Training Metrics:\n";
-    cout << "Accuracy: " << train_accuracy_svm << " Precision: " << train_precision_svm
-         << " Recall: " << train_recall_svm << " F1 Score: " << train_f1_svm << "\n";
+    cout << "Confusion Matrix:\n" << train_cm_svm << "\n";
+    cout << "Accuracy: " << train_accuracy_svm << "\n";
+    cout << "Precision: " << train_precision_svm << "\n";
+    cout << "Recall: " << train_recall_svm << "\n";
+    cout << "F1 Score: " << train_f1_svm << "\n";
     cout << "Validation Metrics:\n";
-    cout << "Accuracy: " << test_accuracy_svm << " Precision: " << test_precision_svm
-         << " Recall: " << test_recall_svm << " F1 Score: " << test_f1_svm << "\n";
+    cout << "Confusion Matrix:\n" << test_cm_svm << "\n";
+    cout << "Accuracy: " << test_accuracy_svm << "\n";
+    cout << "Precision: " << test_precision_svm << "\n";
+    cout << "Recall: " << test_recall_svm << "\n";
+    cout << "F1 Score: " << test_f1_svm << "\n";
+
+    /*
+    // ---- Ensemble Model ----
+    EnsembleModel ensemble;
+    ensemble.addModel(&svm, test_accuracy_svm);
+
+    vector<int> test_pred_ensemble(y_test_vec.size());
+    for (size_t i = 0; i < y_test_vec.size(); ++i) {
+        test_pred_ensemble[i] = ensemble.predict(X_test_vec[i]);
+    }
+
+    MatrixXi test_cm_ensemble = Evaluation::confusion_matrix(vectorToVectorXi(y_test_vec), vectorToVectorXi(test_pred_ensemble), y_test.maxCoeff() + 1);
+    double test_accuracy_ensemble = Evaluation::accuracy(vectorToVectorXi(y_test_vec), vectorToVectorXi(test_pred_ensemble));
+    double test_precision_ensemble = Evaluation::precision(test_cm_ensemble);
+    double test_recall_ensemble = Evaluation::recall(test_cm_ensemble);
+    double test_f1_ensemble = Evaluation::f1_score(test_precision_ensemble, test_recall_ensemble);
+
+    cout << "\nEnsemble Model Evaluation Results:\n";
+    cout << "Validation Metrics:\n";
+    cout << "Confusion Matrix:\n" << test_cm_ensemble << "\n";
+    cout << "Accuracy: " << test_accuracy_ensemble << "\n";
+    cout << "Precision: " << test_precision_ensemble << "\n";
+    cout << "Recall: " << test_recall_ensemble << "\n";
+    cout << "F1 Score: " << test_f1_ensemble << "\n";
+    */
 
     cout << "Evaluation completed.\n";
 
