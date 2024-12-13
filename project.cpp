@@ -9,16 +9,20 @@
 #include <chrono>
 #include <Eigen/Dense>
 #include <iomanip>
+#include <numeric>
 
 using namespace std;
 using namespace Eigen;
 
 void normalize_data(vector<vector<double>>& X) {
-    for (auto& row : X)
-        for (auto& val : row)
-            val /= 255.0;
+    for (size_t i = 0; i < X.size(); ++i) {
+        for (size_t j = 0; j < X[i].size() - 1; ++j) { // Exclude last feature (bias)
+            X[i][j] /= 255.0;
+        }
+        // Ensure the bias term remains 1.0
+        X[i].back() = 1.0;
+    }
 }
-
 
 MatrixXd vectorXiToMatrixXd(const VectorXi& vec, int num_classes) {
     MatrixXd mat = MatrixXd::Zero(vec.size(), num_classes);
@@ -45,8 +49,8 @@ VectorXi vectorToVectorXi(const vector<int>& vec) {
     return v;
 }
 
-// Function to load CIFAR-10 CSV files
-void load_csv(const string &file_path, vector<vector<double>> &X, vector<int> &y) {
+// Function to load CIFAR-10 CSV files with one-hot encoded labels
+void load_csv(const string &file_path, vector<vector<double>> &X, vector<int> &y, int num_classes) {
     ifstream file(file_path);
     if (!file.is_open()) {
         cerr << "Error: Could not open file " << file_path << endl;
@@ -54,43 +58,58 @@ void load_csv(const string &file_path, vector<vector<double>> &X, vector<int> &y
     }
 
     string line;
+    int line_number = 0;
     while (getline(file, line)) {
+        line_number++;
         stringstream ss(line);
         string value;
         vector<double> row;
+        vector<double> label_one_hot;
 
-        if (!getline(ss, value, ',')) {
-            cerr << "Error: Invalid line format in file " << file_path << endl;
-            continue;
+        // Read the first 'num_classes' values as one-hot labels
+        for(int i = 0; i < num_classes; i++) {
+            if(!getline(ss, value, ',')) {
+                cerr << "Error: Not enough label columns in line " << line_number << endl;
+                exit(1);
+            }
+            label_one_hot.push_back(stod(value));
         }
 
-        try {
-            y.push_back(stoi(value));
-        } catch (const invalid_argument& e) {
-            cerr << "Error: Invalid label value in file " << file_path << endl;
-            continue;
-        }
-
-        while (getline(ss, value, ',')) {
-            try {
-                row.push_back(stod(value));
-            } catch (const invalid_argument& e) {
-                cerr << "Error: Invalid feature value in file " << file_path << endl;
-                row.clear();
-                break;
+        // Decode one-hot to integer label
+        int label = -1;
+        int count_ones = 0;
+        for(int i = 0; i < num_classes; i++) {
+            if(label_one_hot[i] == 1.0){
+                label = i;
+                count_ones++;
             }
         }
 
-        if (!row.empty()) {
-            X.push_back(row);
+        if(label == -1) {
+            cerr << "Error: No '1' found in one-hot labels on line " << line_number << endl;
+            exit(1);
         }
+        if(count_ones > 1) {
+            cerr << "Warning: Multiple '1's found in one-hot labels on line " << line_number << ". Using the first occurrence.\n";
+        }
+
+        y.push_back(label);
+
+        // Read the remaining values as features (excluding bias term)
+        while(getline(ss, value, ',')) {
+            row.push_back(stod(value));
+        }
+
+        // Append bias term
+        row.push_back(1.0); // Bias feature
+        X.push_back(row);
     }
 
     file.close();
     cout << "Loaded " << X.size() << " samples from " << file_path << "\n";
 }
 
-// Evaluation class for metrics
+// Evaluation class for logistic regression metrics
 class Evaluation {
 public:
     static MatrixXi confusion_matrix(const VectorXi& y_true, const VectorXi& y_pred, int num_classes) {
@@ -179,62 +198,64 @@ public:
     }
 };
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 // SVM Class Definition
 class SVM {
 private:
-    vector<vector<double>> weights;  // Class-specific weights
-    vector<double> biases;           // Class-specific biases
-    double learning_rate;            // Learning rate
-    double lambda_param;             // Regularization parameter
-    int n_epochs;                    // Number of epochs
-    int n_classes;                   // Number of classes
+    vector<vector<double>> weights; // Weights for each class
+    double learning_rate;           // Learning rate
+    double lambda_param;            // Regularization parameter
+    int n_epochs;                   // Number of epochs
+    int n_classes;                  // Number of classes
 
-public:
-    // Constructor
+public: 
+    // Class constructor
     SVM(double learning_rate, double lambda_param, int n_epochs, int n_classes)
         : learning_rate(learning_rate), lambda_param(lambda_param), n_epochs(n_epochs), n_classes(n_classes) {
-        weights.resize(n_classes, vector<double>(0));
-        biases.resize(n_classes, 0.0);
+        weights.resize(n_classes, vector<double>(0)); // Resize weights
     }
 
-    // Public Getters
-    int getNumClasses() const { return n_classes; }
-    const vector<vector<double>>& getWeights() const { return weights; }
-    const vector<double>& getBiases() const { return biases; }
-
-    // Training the SVM
-    double fit(const vector<vector<double>>& X, const vector<int>& y, int n_features, const vector<vector<double>>& X_test, const vector<int>& y_test) {
+    // Training fit method
+    double fit(const vector<vector<double>> &X, const vector<int> &y, int n_features,
+               const vector<vector<double>> &X_test, const vector<int> &y_test) {
         for (int i = 0; i < n_classes; ++i) {
-            weights[i].resize(n_features, 0.0);  // Initialize weights to zero
+            weights[i].resize(n_features, 0.0); // Resize weights to match n_features
         }
 
         double best_accuracy = 0.0;
 
+        // Start timer for training
+        auto train_start = std::chrono::high_resolution_clock::now();
+
         for (int epoch = 0; epoch < n_epochs; ++epoch) {
-            for (size_t i = 0; i < X.size(); ++i) {
-                int y_true = y[i];
+            for (int c = 0; c < n_classes; ++c) {
+                vector<double> &w = weights[c];
 
-                for (int c = 0; c < n_classes; ++c) {
-                    double linear_output = inner_product(weights[c].begin(), weights[c].end(), X[i].begin(), -biases[c]);
-                    int y_binary = (y_true == c) ? 1 : -1;
+                for (size_t i = 0; i < X.size(); ++i) {
+                    int y_binary = (y[i] == c) ? 1 : -1; // Convert labels to binary
+                    double linear_output = inner_product(w.begin(), w.end(), X[i].begin(), 0.0);
 
-                    // Hinge Loss Update
-                    if (y_binary * linear_output < 1) {
+                    // Update weights
+                    if (y_binary * linear_output < 1) { // Check margin
                         for (int j = 0; j < n_features; ++j) {
-                            weights[c][j] += learning_rate * (y_binary * X[i][j] - 2 * lambda_param * weights[c][j]);
+                            w[j] -= learning_rate * (2 * lambda_param * w[j] - y_binary * X[i][j]);
                         }
-                        biases[c] += learning_rate * y_binary;
                     } else {
                         for (int j = 0; j < n_features; ++j) {
-                            weights[c][j] -= learning_rate * 2 * lambda_param * weights[c][j];
+                            w[j] -= learning_rate * (2 * lambda_param * w[j]);
                         }
                     }
                 }
             }
 
+            // Compute accuracy
             int correct = 0;
+            vector<int> y_pred;
+            y_pred.reserve(X_test.size());
             for (size_t i = 0; i < X_test.size(); ++i) {
                 int pred = predict(X_test[i]);
+                y_pred.push_back(pred);
                 if (pred == y_test[i]) {
                     ++correct;
                 }
@@ -244,16 +265,23 @@ public:
             cout << "Epoch " << epoch + 1 << "/" << n_epochs << " - Accuracy: " << fixed << setprecision(2) << accuracy << "%\n";
         }
 
+        auto train_end = std::chrono::high_resolution_clock::now();
+        auto train_duration = std::chrono::duration_cast<std::chrono::milliseconds>(train_end - train_start).count();
+        cout << "Training took " << train_duration << " ms\n";
+
         return best_accuracy;
     }
 
-    // Predict Function
-    int predict(const vector<double>& x) const {
+
+    // Predict method
+    int predict(const vector<double> &x) const {
         double max_score = -INFINITY;
         int best_class = -1;
 
         for (int c = 0; c < n_classes; ++c) {
-            double linear_output = inner_product(weights[c].begin(), weights[c].end(), x.begin(), -biases[c]);
+            double linear_output = inner_product(weights[c].begin(), weights[c].end(), x.begin(), 0.0);
+
+            // Return class with maximum score
             if (linear_output > max_score) {
                 max_score = linear_output;
                 best_class = c;
@@ -264,75 +292,89 @@ public:
     }
 };
 
-
-
-
-// class EnsembleModel {
-// private:
-//     vector<pair<SVM*, double>> models;
-
-// public:
-//     void addModel(SVM* model, double accuracy) {
-//         models.push_back(make_pair(model, accuracy));
-//     }
-
-//     int predict(const vector<double> &x) const {
-//         vector<double> class_scores(models[0].first->n_classes, 0.0);
-//         for (const auto& model_pair : models) {
-//             const SVM* model = model_pair.first;
-//             double weight = model_pair.second;
-//             vector<double> probs(model->n_classes);
-//             for (int c = 0; c < model->n_classes; ++c) {
-//                 probs[c] = inner_product(model->weights[c].begin(), model->weights[c].end(), x.begin(), -model->biases[c]);
-//             }
-//             for (int c = 0; c < model->n_classes; ++c) {
-//                 class_scores[c] += weight * probs[c];
-//             }
-//         }
-//         return max_element(class_scores.begin(), class_scores.end()) - class_scores.begin();
-//     }
-// };
-
-class EnsembleModel {
-private:
-    vector<pair<SVM*, double>> models;  // List of models and their accuracies
-
+// Evaluation class for svm metrics (NO EIGEN)
+class EvaluationSVM {
 public:
-    void addModel(SVM* model, double accuracy) {
-        models.push_back(make_pair(model, accuracy));
-    }
-
-    int predict(const vector<double>& x) const {
-        if (models.empty()) {
-            cerr << "Error: No models in the ensemble.\n";
-            exit(1);
-        }
-
-        vector<double> class_scores(models[0].first->getNumClasses(), 0.0);
-
-        for (const auto& model_pair : models) {
-            const SVM* model = model_pair.first;
-            double weight = model_pair.second;
-            const vector<vector<double>>& model_weights = model->getWeights();
-            const vector<double>& model_biases = model->getBiases();
-
-            for (int c = 0; c < model->getNumClasses(); ++c) {
-                double linear_output = inner_product(model_weights[c].begin(), model_weights[c].end(), x.begin(), -model_biases[c]);
-                class_scores[c] += weight * linear_output;
+    // Compute the confusion matrix
+    static vector<vector<int>> confusion_matrix(const vector<int>& y_true, const vector<int>& y_pred, int num_classes) {
+        // Initialize confusion matrix with zeros
+        vector<vector<int>> cm(num_classes, vector<int>(num_classes, 0));
+        for (size_t i = 0; i < y_true.size(); ++i) {
+            int true_label = y_true[i];
+            int pred_label = y_pred[i];
+            if (true_label >= 0 && true_label < num_classes && pred_label >= 0 && pred_label < num_classes) {
+                cm[true_label][pred_label]++;
             }
         }
-        return max_element(class_scores.begin(), class_scores.end()) - class_scores.begin();
+        return cm;
+    }
+
+    // Compute accuracy
+    static double accuracy(const vector<int>& y_true, const vector<int>& y_pred) {
+        int correct = 0;
+        for (size_t i = 0; i < y_true.size(); ++i) {
+            if (y_true[i] == y_pred[i]) {
+                ++correct;
+            }
+        }
+        return static_cast<double>(correct) / y_true.size();
+    }
+
+    // Compute precision
+    static double precision(const vector<vector<int>>& cm) {
+        int num_classes = cm.size();
+        double precision_sum = 0.0;
+        for (int i = 0; i < num_classes; ++i) {
+            int tp = cm[i][i];
+            int fp = 0;
+            for (int j = 0; j < num_classes; ++j) {
+                if (j != i) {
+                    fp += cm[j][i];
+                }
+            }
+            if (tp + fp > 0) {
+                precision_sum += static_cast<double>(tp) / (tp + fp);
+            }
+        }
+        return precision_sum / num_classes;
+    }
+
+    // Compute recall
+    static double recall(const vector<vector<int>>& cm) {
+        int num_classes = cm.size();
+        double recall_sum = 0.0;
+        for (int i = 0; i < num_classes; ++i) {
+            int tp = cm[i][i];
+            int fn = 0;
+            for (int j = 0; j < num_classes; ++j) {
+                if (j != i) {
+                    fn += cm[i][j];
+                }
+            }
+            if (tp + fn > 0) {
+                recall_sum += static_cast<double>(tp) / (tp + fn);
+            }
+        }
+        return recall_sum / num_classes;
+    }
+
+    // Compute F1-score
+    static double f1_score(double precision, double recall) {
+        if (precision + recall == 0.0) return 0.0;
+        return 2 * (precision * recall) / (precision + recall);
     }
 };
 
-
 int main() {
+    int n_features = 3073; // Flattened 32x32x3 images
+    int n_classes = 10;    // CIFAR-10 has 10 classes
+
     // Load CIFAR-10 data
     vector<vector<double>> X_train_vec, X_test_vec;
     vector<int> y_train_vec, y_test_vec;
 
-    load_csv("train.csv", X_train_vec, y_train_vec);
-    load_csv("test.csv", X_test_vec, y_test_vec);
+    load_csv("train.csv", X_train_vec, y_train_vec,n_classes);
+    load_csv("test.csv", X_test_vec, y_test_vec, n_classes);
 
     // Normalize data
     normalize_data(X_train_vec);
@@ -344,9 +386,8 @@ int main() {
     VectorXi y_train = vectorToVectorXi(y_train_vec);
     VectorXi y_test = vectorToVectorXi(y_test_vec);
 
-    /*
     // ---- Logistic Regression ----
-    LogisticRegression lr(0.1, 10);
+    LogisticRegression lr(0.1, 1000);
 
     // Convert labels to MatrixXd (one-hot encoding)
     MatrixXd y_train_onehot = vectorXiToMatrixXd(y_train, y_train.maxCoeff() + 1);
@@ -386,76 +427,62 @@ int main() {
     cout << "Precision: " << test_precision_lr << "\n";
     cout << "Recall: " << test_recall_lr << "\n";
     cout << "F1 Score: " << test_f1_lr << "\n";
-    */
-
+    
     // ---- SVM ----
-    SVM svm(1.0, 0.1, 15, y_train.maxCoeff() + 1);
-    svm.fit(X_train_vec, y_train_vec, X_train_vec[0].size(), X_test_vec, y_test_vec);
+    cout << "Training SVM...\n";
+    SVM svm(1e-5, 0.1, 20, n_classes);
+    double best_accuracy = svm.fit(X_train_vec, y_train_vec, n_features, X_test_vec, y_test_vec);
 
-    vector<int> train_pred_svm(y_train_vec.size());
-    vector<int> test_pred_svm(y_test_vec.size());
+    cout << "Best Accuracy: " << fixed << setprecision(2) << best_accuracy << "%\n";
 
-    for (size_t i = 0; i < y_train_vec.size(); ++i) {
-        train_pred_svm[i] = svm.predict(X_train_vec[i]);
-    }
-    for (size_t i = 0; i < y_test_vec.size(); ++i) {
-        test_pred_svm[i] = svm.predict(X_test_vec[i]);
-    }
-
-    MatrixXi train_cm_svm = Evaluation::confusion_matrix(vectorToVectorXi(y_train_vec), vectorToVectorXi(train_pred_svm), y_train.maxCoeff() + 1);
-    MatrixXi test_cm_svm = Evaluation::confusion_matrix(vectorToVectorXi(y_test_vec), vectorToVectorXi(test_pred_svm), y_test.maxCoeff() + 1);
-
-    double train_accuracy_svm = Evaluation::accuracy(vectorToVectorXi(y_train_vec), vectorToVectorXi(train_pred_svm));
-    double test_accuracy_svm = Evaluation::accuracy(vectorToVectorXi(y_test_vec), vectorToVectorXi(test_pred_svm));
-
-    double train_precision_svm = Evaluation::precision(train_cm_svm);
-    double test_precision_svm = Evaluation::precision(test_cm_svm);
-
-    double train_recall_svm = Evaluation::recall(train_cm_svm);
-    double test_recall_svm = Evaluation::recall(test_cm_svm);
-
-    double train_f1_svm = Evaluation::f1_score(train_precision_svm, train_recall_svm);
-    double test_f1_svm = Evaluation::f1_score(test_precision_svm, test_recall_svm);
-
-    cout << "SVM Evaluation Results:\n";
-    cout << "Training Metrics:\n";
-    cout << "Confusion Matrix:\n" << train_cm_svm << "\n";
-    cout << "Accuracy: " << train_accuracy_svm << "\n";
-    cout << "Precision: " << train_precision_svm << "\n";
-    cout << "Recall: " << train_recall_svm << "\n";
-    cout << "F1 Score: " << train_f1_svm << "\n";
-    cout << "Validation Metrics:\n";
-    cout << "Confusion Matrix:\n" << test_cm_svm << "\n";
-    cout << "Accuracy: " << test_accuracy_svm << "\n";
-    cout << "Precision: " << test_precision_svm << "\n";
-    cout << "Recall: " << test_recall_svm << "\n";
-    cout << "F1 Score: " << test_f1_svm << "\n";
-
-    /*
-    // ---- Ensemble Model ----
-    EnsembleModel ensemble;
-    ensemble.addModel(&svm, test_accuracy_svm);
-
-    vector<int> test_pred_ensemble(y_test_vec.size());
-    for (size_t i = 0; i < y_test_vec.size(); ++i) {
-        test_pred_ensemble[i] = ensemble.predict(X_test_vec[i]);
+    // Generate predictions on the training set
+    vector<int> y_pred_train_svm;
+    y_pred_train_svm.reserve(X_train_vec.size());
+    for (const auto& sample : X_train_vec) {
+        y_pred_train_svm.push_back(svm.predict(sample));
     }
 
-    MatrixXi test_cm_ensemble = Evaluation::confusion_matrix(vectorToVectorXi(y_test_vec), vectorToVectorXi(test_pred_ensemble), y_test.maxCoeff() + 1);
-    double test_accuracy_ensemble = Evaluation::accuracy(vectorToVectorXi(y_test_vec), vectorToVectorXi(test_pred_ensemble));
-    double test_precision_ensemble = Evaluation::precision(test_cm_ensemble);
-    double test_recall_ensemble = Evaluation::recall(test_cm_ensemble);
-    double test_f1_ensemble = Evaluation::f1_score(test_precision_ensemble, test_recall_ensemble);
+    // Generate predictions on the test set
+    vector<int> y_pred_test_svm;
+    y_pred_test_svm.reserve(X_test_vec.size());
+    for (const auto& sample : X_test_vec) {
+        y_pred_test_svm.push_back(svm.predict(sample));
+    }
 
-    cout << "\nEnsemble Model Evaluation Results:\n";
-    cout << "Validation Metrics:\n";
-    cout << "Confusion Matrix:\n" << test_cm_ensemble << "\n";
-    cout << "Accuracy: " << test_accuracy_ensemble << "\n";
-    cout << "Precision: " << test_precision_ensemble << "\n";
-    cout << "Recall: " << test_recall_ensemble << "\n";
-    cout << "F1 Score: " << test_f1_ensemble << "\n";
-    */
 
+    // Compute confusion matrix for the training set
+    vector<vector<int>> cm_svm_train = EvaluationSVM::confusion_matrix(y_train_vec, y_pred_train_svm, n_classes);
+
+    // Compute confusion matrix for the test set
+    vector<vector<int>> cm_svm_test = EvaluationSVM::confusion_matrix(y_test_vec, y_pred_test_svm, n_classes);
+    
+    // Compute training metrics
+    double accuracy_svm_train = EvaluationSVM::accuracy(y_train_vec, y_pred_train_svm) * 100.0;
+    double precision_svm_train = EvaluationSVM::precision(cm_svm_train) * 100.0;
+    double recall_svm_train = EvaluationSVM::recall(cm_svm_train) * 100.0;
+    double f1_svm_train = EvaluationSVM::f1_score(precision_svm_train, recall_svm_train);
+
+    // Compute testing metrics
+    double accuracy_svm_test = EvaluationSVM::accuracy(y_test_vec, y_pred_test_svm) * 100.0;
+    double precision_svm_test = EvaluationSVM::precision(cm_svm_test) * 100.0;
+    double recall_svm_test = EvaluationSVM::recall(cm_svm_test) * 100.0;
+    double f1_svm_test = EvaluationSVM::f1_score(precision_svm_test, recall_svm_test);
+
+
+   // Display training metrics
+    cout << fixed << setprecision(2);
+    cout << "Training Evaluation Metrics:\n";
+    cout << "Accuracy: " << accuracy_svm_train << "%\n";
+    cout << "Precision: " << precision_svm_train << "%\n";
+    cout << "Recall: " << recall_svm_train << "%\n";
+    cout << "F1 Score: " << f1_svm_train << "%\n";
+
+    // Display testing metrics
+    cout << "\nTesting Evaluation Metrics:\n";
+    cout << "Accuracy: " << accuracy_svm_test << "%\n";
+    cout << "Precision: " << precision_svm_test << "%\n";
+    cout << "Recall: " << recall_svm_test << "%\n";
+    cout << "F1 Score: " << f1_svm_test << "%\n";
     cout << "Evaluation completed.\n";
 
     return 0;
