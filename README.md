@@ -3,11 +3,16 @@
 
 The project involves implementing and analyzing the performance of Logistic Regression, Support Vector Machine, and Ensemble models on the CIFAR-10 dataset. The language used for this purpose was Python.
 
-Dataset Link: CIFAR-10 Dataset
+#######################################################################################
+
+Dataset Link: [CIFAR-10 Dataset](https://www.cs.toronto.edu/~kriz/cifar.html) University of Toronto
+
+Download and extract the "cifar-10-python" dataset from the official website.
 
 Run the Data2CSV.ipynb file to generate the dataset in the required format.
 
 #######################################################################################
+
 Python Execution (3.10.12)
 
 Open project.ipynb in Jupyter Notebook.
@@ -17,6 +22,8 @@ Run all cells sequentially.
 #######################################################################################
 
 C++ Execution (14.2.0)
+
+Download eigen library for matrix computation: https://eigen.tuxfamily.org/dox/GettingStarted.html
 
 Ensure the eigen-3.4.0 library is in the root folder.
 
