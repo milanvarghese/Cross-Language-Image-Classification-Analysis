@@ -1,18 +1,18 @@
 # Cross-Language-Image-Classification
-##################################################################################################################
+#######################################################################################
 
 The project involves implementing and analyzing the performance of Logistic Regression, Support Vector Machine, and Ensemble models on the CIFAR-10 dataset. The language used for this purpose was Python.
 
 Dataset Link: CIFAR-10 Dataset
 
-##################################################################################################################
+#######################################################################################
 Python Execution
 
 Open project.ipynb in Jupyter Notebook.
 
 Run all cells sequentially.
 
-##################################################################################################################
+#######################################################################################
 
 C++ Execution
 
