@@ -27,7 +27,12 @@ void normalize_data(vector<vector<double>>& X) {
 MatrixXd vectorXiToMatrixXd(const VectorXi& vec, int num_classes) {
     MatrixXd mat = MatrixXd::Zero(vec.size(), num_classes);
     for (int i = 0; i < vec.size(); ++i) {
-        mat(i, vec(i)) = 1.0;
+        if (vec(i) >= 0 && vec(i) < num_classes) {
+            mat(i, vec(i)) = 1.0;
+        } else {
+            cerr << "Error: Invalid class index.\n";
+            exit(1);
+        }
     }
     return mat;
 }
@@ -50,7 +55,7 @@ VectorXi vectorToVectorXi(const vector<int>& vec) {
 }
 
 // Function to load CIFAR-10 CSV files with one-hot encoded labels
-void load_csv(const string &file_path, vector<vector<double>> &X, vector<int> &y, int num_classes) {
+void load_csv(const string &file_path, vector<vector<double>> &X, vector<int> &y) {
     ifstream file(file_path);
     if (!file.is_open()) {
         cerr << "Error: Could not open file " << file_path << endl;
@@ -66,42 +71,21 @@ void load_csv(const string &file_path, vector<vector<double>> &X, vector<int> &y
         vector<double> row;
         vector<double> label_one_hot;
 
-        // Read the first 'num_classes' values as one-hot labels
-        for(int i = 0; i < num_classes; i++) {
-            if(!getline(ss, value, ',')) {
-                cerr << "Error: Not enough label columns in line " << line_number << endl;
-                exit(1);
-            }
-            label_one_hot.push_back(stod(value));
-        }
-
-        // Decode one-hot to integer label
-        int label = -1;
-        int count_ones = 0;
-        for(int i = 0; i < num_classes; i++) {
-            if(label_one_hot[i] == 1.0){
-                label = i;
-                count_ones++;
-            }
-        }
-
-        if(label == -1) {
-            cerr << "Error: No '1' found in one-hot labels on line " << line_number << endl;
+        // Read the label (first value in the row)
+        if (!getline(ss, value, ',')) {
+            cerr << "Error: Missing label in line " << line_number << endl;
             exit(1);
         }
-        if(count_ones > 1) {
-            cerr << "Warning: Multiple '1's found in one-hot labels on line " << line_number << ". Using the first occurrence.\n";
-        }
-
+        int label = stoi(value);
         y.push_back(label);
 
-        // Read the remaining values as features (excluding bias term)
-        while(getline(ss, value, ',')) {
+        // Read the remaining values as features
+        while (getline(ss, value, ',')) {
             row.push_back(stod(value));
         }
 
-        // Append bias term
-        row.push_back(1.0); // Bias feature
+        // Append bias term to the feature vector
+        row.push_back(1.0);
         X.push_back(row);
     }
 
@@ -185,7 +169,10 @@ public:
         mt19937 gen(rd());
         normal_distribution<> d(0, 1);
 
-        weights = MatrixXd::NullaryExpr(num_features, num_classes, [&]() { return d(gen); });
+        weights = MatrixXd::NullaryExpr(num_features, num_classes, [&]() { return d(gen) * 0.01; });
+
+        // Start timer for training
+        auto train_start = std::chrono::high_resolution_clock::now();
 
         for (int epoch = 0; epoch < epochs; ++epoch) {
             MatrixXd y_pred_train = softmax(X_train * weights);
@@ -193,8 +180,20 @@ public:
             MatrixXd gradient = (X_train.transpose() * error) / y_train.rows();
             weights -= learning_rate * gradient;
 
-            cout << "Epoch " << epoch + 1 << "/" << epochs << endl;
+            // Calculate and print accuracy for the current epoch
+            VectorXi train_predictions = predict(X_train);
+            VectorXi true_labels = VectorXi::Zero(y_train.rows());
+            for (int i = 0; i < y_train.rows(); ++i) {
+                y_train.row(i).maxCoeff(&true_labels(i));
+            }
+
+            double accuracy = Evaluation::accuracy(true_labels, train_predictions);
+            cout << "Epoch " << epoch + 1 << "/" << epochs << " - Training Accuracy: " << accuracy * 100 << "%\n";
         }
+
+        auto train_end = std::chrono::high_resolution_clock::now();
+        auto train_duration = std::chrono::duration_cast<std::chrono::milliseconds>(train_end - train_start).count();
+        cout << "Training took " << train_duration << " ms\n";
     }
 };
 
@@ -373,8 +372,8 @@ int main() {
     vector<vector<double>> X_train_vec, X_test_vec;
     vector<int> y_train_vec, y_test_vec;
 
-    load_csv("train.csv", X_train_vec, y_train_vec,n_classes);
-    load_csv("test.csv", X_test_vec, y_test_vec, n_classes);
+    load_csv("train.csv", X_train_vec, y_train_vec);
+    load_csv("test.csv", X_test_vec, y_test_vec);
 
     // Normalize data
     normalize_data(X_train_vec);
@@ -387,7 +386,7 @@ int main() {
     VectorXi y_test = vectorToVectorXi(y_test_vec);
 
     // ---- Logistic Regression ----
-    LogisticRegression lr(0.1, 1000);
+    LogisticRegression lr(0.01, 500);
 
     // Convert labels to MatrixXd (one-hot encoding)
     MatrixXd y_train_onehot = vectorXiToMatrixXd(y_train, y_train.maxCoeff() + 1);
@@ -449,13 +448,12 @@ int main() {
         y_pred_test_svm.push_back(svm.predict(sample));
     }
 
-
     // Compute confusion matrix for the training set
     vector<vector<int>> cm_svm_train = EvaluationSVM::confusion_matrix(y_train_vec, y_pred_train_svm, n_classes);
 
     // Compute confusion matrix for the test set
     vector<vector<int>> cm_svm_test = EvaluationSVM::confusion_matrix(y_test_vec, y_pred_test_svm, n_classes);
-    
+
     // Compute training metrics
     double accuracy_svm_train = EvaluationSVM::accuracy(y_train_vec, y_pred_train_svm) * 100.0;
     double precision_svm_train = EvaluationSVM::precision(cm_svm_train) * 100.0;
@@ -472,6 +470,13 @@ int main() {
    // Display training metrics
     cout << fixed << setprecision(2);
     cout << "Training Evaluation Metrics:\n";
+    cout << "Training Confusion Matrix:\n";
+    for (const auto& row : cm_svm_train) {
+        for (int val : row) {
+            cout << val << " ";
+        }
+        cout << "\n";
+    }
     cout << "Accuracy: " << accuracy_svm_train << "%\n";
     cout << "Precision: " << precision_svm_train << "%\n";
     cout << "Recall: " << recall_svm_train << "%\n";
@@ -479,6 +484,13 @@ int main() {
 
     // Display testing metrics
     cout << "\nTesting Evaluation Metrics:\n";
+    cout << "Testing Confusion Matrix:\n";
+    for (const auto& row : cm_svm_test) {
+        for (int val : row) {
+            cout << val << " ";
+        }
+        cout << "\n";
+    }
     cout << "Accuracy: " << accuracy_svm_test << "%\n";
     cout << "Precision: " << precision_svm_test << "%\n";
     cout << "Recall: " << recall_svm_test << "%\n";
